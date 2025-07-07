@@ -16,11 +16,10 @@ import tqdm
 
 
 # Specify your video name and target pose class to count the repetitions.
-video_path = 'pushups.mp4'
 class_name='pushups_down'
 out_video_path = 'pushups-sample-out.mp4'
 
-video_cap = cv2.VideoCapture(video_path)
+video_cap = cv2.VideoCapture(0)
 
 # Get some video parameters to generate output video with classificaiton.
 video_n_frames = video_cap.get(cv2.CAP_PROP_FRAME_COUNT)
@@ -140,9 +139,10 @@ with tqdm.tqdm(total=video_n_frames, position=0, leave=True) as pbar:
     # Save the output frame.
     out_video.write(cv2.cvtColor(np.array(output_frame), cv2.COLOR_RGB2BGR))
 
-    # Show intermediate frames of the video to track progress.
-    if frame_idx % 50 == 0:
-      show_image(output_frame)
+    cv2.imshow('MediaPipe', cv2.cvtColor(np.array(output_frame), cv2.COLOR_RGB2BGR))
+
+    if cv2.waitKey(1) & 0xFF == ord("q"):
+      break
 
     frame_idx += 1
     pbar.update()
@@ -153,11 +153,7 @@ out_video.release()
 # Release MediaPipe resources.
 pose_tracker.close()
 
-# Show the last frame of the video.
-if output_frame is not None:
-  show_image(output_frame)
-
 video_cap.release()
-
+cv2.destroyAllWindows()
 
 
