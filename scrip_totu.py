@@ -23,7 +23,7 @@ video_cap = cv2.VideoCapture(0)
 
 # Get some video parameters to generate output video with classificaiton.
 video_n_frames = video_cap.get(cv2.CAP_PROP_FRAME_COUNT)
-video_fps = video_cap.get(cv2.CAP_PROP_FPS)
+video_fps = video_cap.get(cv2.CAP_PROP_FPS) or 25
 video_width = int(video_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 video_height = int(video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
@@ -75,7 +75,7 @@ pose_classification_visualizer = PoseClassificationVisualizer(
 
 
 # Open output video.
-out_video = cv2.VideoWriter(out_video_path, cv2.VideoWriter_four(*'mp4v'), video_fps, (video_width, video_height))
+out_video = cv2.VideoWriter(out_video_path, cv2.VideoWriter_fourcc(*'mp4v'), video_fps, (video_width, video_height))
 
 frame_idx = 0
 output_frame = None
