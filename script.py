@@ -1,171 +1,171 @@
-from matplotlib import pyplot as plt
-import numpy as np
-from collections import deque
-from PoseClassification.utils import show_image
-from PoseClassification.pose_embedding import FullBodyPoseEmbedding
-from PoseClassification.pose_classifier import PoseClassifier
-from PoseClassification.utils import EMADictSmoothing
-from PoseClassification.utils import RepetitionCounter
-from PoseClassification.visualize import PoseClassificationVisualizer
-from PoseClassification.bootstrap import BootstrapHelper
-from mediapipe.python.solutions import pose as mp_pose
-from mediapipe.python.solutions import drawing_utils as mp_drawing
 import cv2
-import tqdm
-import os
+import mediapipe as mp
+import numpy as np
+import matplotlib.pyplot as plt
+from collections import deque
+import platform
 
-# Pose class to count repetitions for
-class_name = 'pushups_down'
-out_video_path = 'pushups-sample-out.mp4'
+# Sound alert setup
+try:
+    if platform.system() == "Windows":
+        import winsound
+        def play_sound():
+            winsound.Beep(1000, 500)  # frequency 1000 Hz, duration 500 ms
+    else:
+        from playsound import playsound
+        import threading
 
-# Open webcam or video file
-video_cap = cv2.VideoCapture(0)
+        def play_sound():
+            # Play sound asynchronously to avoid blocking main loop
+            threading.Thread(target=playsound, args=('alert.mp3',), daemon=True).start()
 
-# Video parameters
-video_n_frames = video_cap.get(cv2.CAP_PROP_FRAME_COUNT)
-video_fps = video_cap.get(cv2.CAP_PROP_FPS) or 25
-video_width = int(video_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-video_height = int(video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+except ImportError:
+    def play_sound():
+        print("Sound module not available")
 
-print(f"video_n_frames: {video_n_frames}")
-print(f"video_fps: {video_fps}")
-print(f"video_width: {video_width}")
-print(f"video_height: {video_height}")
+# Initialize MediaPipe Pose
+mp_pose = mp.solutions.pose
+pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5)
 
-# Pose samples folder
-pose_samples_folder = 'fitness_poses_csvs_out'
+# Open webcam
+cap = cv2.VideoCapture(0)
 
-# Initialize components
-pose_tracker = mp_pose.Pose()
-pose_embedder = FullBodyPoseEmbedding()
-pose_classifier = PoseClassifier(
-    pose_samples_folder=pose_samples_folder,
-    pose_embedder=pose_embedder,
-    top_n_by_max_distance=30,
-    top_n_by_mean_distance=10)
+if not cap.isOpened():
+    print("Error: Could not open webcam.")
+    exit()
 
-pose_classification_filter = EMADictSmoothing(window_size=10, alpha=0.2)
-repetition_counter = RepetitionCounter(class_name=class_name, enter_threshold=6, exit_threshold=4)
-pose_classification_visualizer = PoseClassificationVisualizer(
-    class_name=class_name,
-    plot_x_max=video_n_frames,
-    plot_y_max=10)
+ret, frame = cap.read()
+if not ret:
+    print("Error: Could not read frame from webcam.")
+    exit()
 
-# Output video writer
-out_video = cv2.VideoWriter(out_video_path, cv2.VideoWriter_fourcc(*'mp4v'), video_fps, (video_width, video_height))
+height, width, _ = frame.shape
 
-# --- Real-time plotting setup ---
+# Buffers
+buf_size = 100
+hipYs = deque(maxlen=buf_size)
+velocities = deque(maxlen=buf_size)
+times = deque(maxlen=buf_size)
+
+# Fall detection parameters (more sensitive)
+fall_velocity_threshold = 5       # Lower threshold for velocity (pixels/frame)
+fall_acceleration_threshold = 10  # Acceleration threshold
+fall_frame_limit = 2               # Frames to confirm fall
+fall_counter = 0
+fall_alert_triggered = False  # To control sound playback once per fall
+
+# Set up Matplotlib
 plt.ion()
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6))
-line1, = ax1.plot([], [], label='Right Wrist Y')
-line2, = ax2.plot([], [], label='Velocity (dy/dt)', color='orange')
-ax1.set_ylabel('Y Position')
+fig, (ax_img, ax1, ax2) = plt.subplots(3, 1, figsize=(8, 10))
+
+# Video display
+img_plot = ax_img.imshow(np.zeros((height, width, 3), dtype=np.uint8))
+ax_img.axis('off')
+ax_img.set_title("Pose Landmarks")
+
+# Hip Y and velocity plots
+l1, = ax1.plot([], [], label='Hip Y')
+l2, = ax2.plot([], [], label='Velocity', color='r')
+ax1.invert_yaxis()
+ax1.set_ylabel('Hip Y (px)')
 ax2.set_ylabel('Velocity')
-ax2.set_xlabel('Time (s)')
+ax2.set_xlabel('Frame')
 ax1.legend()
 ax2.legend()
 
-# Buffers
-plot_window = 100
-right_wrist_y = deque(maxlen=plot_window)
-right_wrist_dy = deque(maxlen=plot_window)
-frame_times = deque(maxlen=plot_window)
-
 frame_idx = 0
-output_frame = None
 
-with tqdm.tqdm(total=video_n_frames, position=0, leave=True) as pbar:
+try:
     while True:
-        success, input_frame = video_cap.read()
-        if not success:
-            print("Unable to read input video frame, breaking!")
+        ret, frame = cap.read()
+        if not ret:
             break
 
-        # Pose tracking
-        input_frame_rgb = cv2.cvtColor(input_frame, cv2.COLOR_BGR2RGB)
-        result = pose_tracker.process(image=input_frame_rgb)
-        pose_landmarks = result.pose_landmarks
+        image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = pose.process(image)
+        output = frame.copy()
 
-        # Visualization frame
-        output_frame = input_frame_rgb.copy()
+        hip_y = None
 
-        if pose_landmarks is not None:
-            mp_drawing.draw_landmarks(
-                image=output_frame,
-                landmark_list=pose_landmarks,
-                connections=mp_pose.POSE_CONNECTIONS)
+        if results.pose_landmarks:
+            for landmark in results.pose_landmarks.landmark:
+                cx, cy = int(landmark.x * width), int(landmark.y * height)
+                cv2.circle(output, (cx, cy), 5, (0, 255, 0), -1)
 
-            # Convert pose landmarks
-            frame_height, frame_width = output_frame.shape[0], output_frame.shape[1]
-            pose_landmarks = np.array([
-                [lmk.x * frame_width, lmk.y * frame_height, lmk.z * frame_width]
-                for lmk in pose_landmarks.landmark
-            ], dtype=np.float32)
+            hip_landmark = results.pose_landmarks.landmark[mp_pose.PoseLandmark.NOSE]
+            #hip_landmark = results.pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_HIP]
+            hip_y = hip_landmark.y * height
 
-            assert pose_landmarks.shape == (33, 3), 'Unexpected landmarks shape: {}'.format(pose_landmarks.shape)
+        # Update data buffers and detect fall
+        if hip_y is not None:
+            hipYs.append(hip_y)
+            times.append(frame_idx)
 
-            # Pose classification
-            pose_classification = pose_classifier(pose_landmarks)
-            pose_classification_filtered = pose_classification_filter(pose_classification)
-            repetitions_count = repetition_counter(pose_classification_filtered)
+            if len(hipYs) > 1:
+                velocity = hipYs[-1] - hipYs[-2]
+                velocities.append(velocity)
 
-            # --- Track landmark for plotting ---
-            right_wrist_y_val = pose_landmarks[mp_pose.PoseLandmark.RIGHT_WRIST.value][1]
-            time_sec = frame_idx / video_fps
+                acceleration = 0
+                if len(velocities) > 1:
+                    acceleration = velocities[-1] - velocities[-2]
 
-            right_wrist_y.append(right_wrist_y_val)
-            frame_times.append(time_sec)
-
-            step = 15
-            if len(right_wrist_y) > step +5:
-                dy = (right_wrist_y[-1] - right_wrist_y[-2-step]) / (frame_times[-1] - frame_times[-2-step])
+                # Fall detection logic (more sensitive)
+                if velocity > fall_velocity_threshold and acceleration > fall_acceleration_threshold:
+                    fall_counter += 1
+                else:
+                    fall_counter = max(0, fall_counter - 1)
             else:
-                dy = 0
-            right_wrist_dy.append(dy)
-
+                velocities.append(0)
+                fall_counter = 0
         else:
-            # Handle case with no pose
-            pose_classification = None
-            pose_classification_filtered = pose_classification_filter(dict())
-            pose_classification_filtered = None
-            repetitions_count = repetition_counter.n_repeats
-
-        # Draw classification and counter
-        output_frame = pose_classification_visualizer(
-            frame=output_frame,
-            pose_classification=pose_classification,
-            pose_classification_filtered=pose_classification_filtered,
-            repetitions_count=repetitions_count)
-
-        # Save and display output frame
-        out_video.write(cv2.cvtColor(np.array(output_frame), cv2.COLOR_RGB2BGR))
-        cv2.imshow('Pose Classification', cv2.cvtColor(np.array(output_frame), cv2.COLOR_RGB2BGR))
-
-        # --- Update plot ---
-        line1.set_xdata(frame_times)
-        line1.set_ydata(right_wrist_y)
-        ax1.relim()
-        ax1.autoscale_view()
-
-        line2.set_xdata(frame_times)
-        line2.set_ydata(right_wrist_dy)
-        ax2.relim()
-        ax2.autoscale_view()
-
-        plt.pause(0.001)
-        plt.draw()
+            # No detection, keep previous values or zero
+            hipYs.append(hipYs[-1] if hipYs else 0)
+            velocities.append(0)
+            times.append(frame_idx)
+            fall_counter = max(0, fall_counter - 1)
 
         frame_idx += 1
 
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
+        # Visual and audio alert if fall detected
+        if fall_counter >= fall_frame_limit:
+            # Dramatic red flashing overlay
+            alpha = 0.6 + 0.4 * np.sin(frame_idx * 0.3)  # oscillate transparency
+            overlay = output.copy()
+            cv2.rectangle(overlay, (0, 0), (width, height), (0, 0, 255), -1)
+            cv2.addWeighted(overlay, alpha, output, 1 - alpha, 0, output)
 
-        pbar.update()
+            cv2.putText(output, "FALL DETECTED!", (50, int(height/2)), cv2.FONT_HERSHEY_SIMPLEX,
+                        3, (255, 255, 255), 8, cv2.LINE_AA)
 
-# Cleanup
-out_video.release()
-video_cap.release()
-pose_tracker.close()
-cv2.destroyAllWindows()
-plt.ioff()
-plt.show()
+            # Play sound once per fall event
+            if not fall_alert_triggered:
+                play_sound()
+                fall_alert_triggered = True
+        else:
+            fall_alert_triggered = False
+
+        # Update plots
+        rgb_frame = cv2.cvtColor(output, cv2.COLOR_BGR2RGB)
+        img_plot.set_data(rgb_frame)
+
+        l1.set_data(times, hipYs)
+        l2.set_data(times, velocities)
+
+        ax1.set_xlim(max(0, frame_idx - buf_size), frame_idx + 1)
+        ax2.set_xlim(ax1.get_xlim())
+
+        if hipYs:
+            ax1.set_ylim(min(hipYs), max(hipYs))
+        if velocities:
+            ax2.set_ylim(min(velocities), max(velocities))
+
+        plt.pause(0.001)
+
+except KeyboardInterrupt:
+    print("Interrupted.")
+
+finally:
+    cap.release()
+    plt.ioff()
+    plt.show()
+    cv2.destroyAllWindows()
