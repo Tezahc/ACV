@@ -13,13 +13,18 @@ import csv
 import os
 import cv2
 import tqdm
-
+import argparse
+from src import args_validation
 
 # Specify your video name and target pose class to count the repetitions.
 class_name='pushups_down'
 out_video_path = 'pushups-sample-out.mp4'
 
-video_cap = cv2.VideoCapture(0)
+args = args_validation.args_validation(argparse.ArgumentParser())
+input_video_file = args.input_video_file
+out_video_path = args.output_video_file
+
+video_cap = cv2.VideoCapture(input_video_file)
 
 # Get some video parameters to generate output video with classificaiton.
 video_n_frames = video_cap.get(cv2.CAP_PROP_FRAME_COUNT)
