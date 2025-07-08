@@ -139,11 +139,11 @@ with tqdm.tqdm(total=video_n_frames, position=0, leave=True) as pbar:
         out_video.write(cv2.cvtColor(np.array(output_frame), cv2.COLOR_RGB2BGR))
 
         cv2.imshow('MediaPipe', cv2.cvtColor(np.array(output_frame), cv2.COLOR_RGB2BGR))
+        frame_idx += 1
 
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
-        frame_idx += 1
         pbar.update()
 
 # Close output video.

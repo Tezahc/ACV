@@ -112,7 +112,8 @@ class PoseClassificationVisualizer(object):
                     y.append(classification[self._class_name])
                 else:
                     y.append(0)
-            plt.plot(y, linewidth=7)
+            label = "filtered" if classification_history is self._pose_classification_filtered_history else "raw"
+            plt.plot(y, linewidth=7, label=label)
 
         plt.grid(axis="y", alpha=0.75)
         plt.xlabel("Frame")
@@ -122,7 +123,7 @@ class PoseClassificationVisualizer(object):
 
         if self._plot_y_max is not None:
             plt.ylim(top=self._plot_y_max)
-        if self._plot_x_max is not None:
+        if self._plot_x_max is not None and self._plot_x_max > 0:
             plt.xlim(right=self._plot_x_max)
 
         # Convert plot to image.
