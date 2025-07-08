@@ -4,32 +4,27 @@ import numpy as np
 import matplotlib.pyplot as plt
 from collections import deque
 import platform
+import threading
+import matplotlib.gridspec as gridspec
 
 # Sound alert setup
 try:
     if platform.system() == "Windows":
         import winsound
         def play_sound():
-            winsound.Beep(1000, 500)  # frequency 1000 Hz, duration 500 ms
+            winsound.Beep(1000, 700)
     else:
         from playsound import playsound
-        import threading
-
         def play_sound():
-            # Play sound asynchronously to avoid blocking main loop
             threading.Thread(target=playsound, args=('alert.mp3',), daemon=True).start()
-
 except ImportError:
     def play_sound():
         print("Sound module not available")
 
-# Initialize MediaPipe Pose
 mp_pose = mp.solutions.pose
 pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5)
 
-# Open webcam
 cap = cv2.VideoCapture(0)
-
 if not cap.isOpened():
     print("Error: Could not open webcam.")
     exit()
@@ -41,39 +36,132 @@ if not ret:
 
 height, width, _ = frame.shape
 
-# Buffers
-buf_size = 100
-hipYs = deque(maxlen=buf_size)
-velocities = deque(maxlen=buf_size)
+buf_size = 150
 times = deque(maxlen=buf_size)
 
-# Fall detection parameters (more sensitive)
-fall_velocity_threshold = 5       # Lower threshold for velocity (pixels/frame)
-fall_acceleration_threshold = 10  # Acceleration threshold
-fall_frame_limit = 2               # Frames to confirm fall
+# Raw Y positions
+nose_raw = deque(maxlen=buf_size)
+left_hip_raw = deque(maxlen=buf_size)
+
+# Filtered Y positions
+nose_filt = deque(maxlen=buf_size)
+left_hip_filt = deque(maxlen=buf_size)
+
+# Filtered velocities
+nose_vel_filt = deque(maxlen=buf_size)
+left_hip_vel_filt = deque(maxlen=buf_size)
+
+# Conditions (0 or 1)
+pos_cond_nose = deque(maxlen=buf_size)
+pos_cond_lhip = deque(maxlen=buf_size)
+vel_cond_nose = deque(maxlen=buf_size)
+vel_cond_lhip = deque(maxlen=buf_size)
+fall_cond = deque(maxlen=buf_size)
+
+# EMA smoothing factor
+alpha = 0.3
+
+# Thresholds
+fall_threshold_lhip = height * 0.75
+fall_threshold_nose = height * 0.6
+velocity_threshold = 7.0
+fall_frame_limit = 3
 fall_counter = 0
-fall_alert_triggered = False  # To control sound playback once per fall
+fall_alert_triggered = False
 
-# Set up Matplotlib
+min_valid_y = height * 0.2
+max_valid_y = height * 0.95
+
 plt.ion()
-fig, (ax_img, ax1, ax2) = plt.subplots(3, 1, figsize=(8, 10))
 
-# Video display
-img_plot = ax_img.imshow(np.zeros((height, width, 3), dtype=np.uint8))
-ax_img.axis('off')
-ax_img.set_title("Pose Landmarks")
+# Use gridspec for better layout
+fig = plt.figure(figsize=(14, 8))
 
-# Hip Y and velocity plots
-l1, = ax1.plot([], [], label='Hip Y')
-l2, = ax2.plot([], [], label='Velocity', color='r')
-ax1.invert_yaxis()
-ax1.set_ylabel('Hip Y (px)')
-ax2.set_ylabel('Velocity')
-ax2.set_xlabel('Frame')
-ax1.legend()
-ax2.legend()
+# Main gridspec: 1 row, 2 columns (video + plots)
+gs_main = gridspec.GridSpec(1, 2, width_ratios=[4, 3], wspace=0.3)
+
+# Video feed axis (left)
+ax_video = fig.add_subplot(gs_main[0])
+img_plot = ax_video.imshow(np.zeros((height, width, 3), dtype=np.uint8))
+ax_video.axis('off')
+ax_video.set_title("Pose Landmarks")
+
+# Nested gridspec for 7 stacked plots (right)
+gs_plots = gridspec.GridSpecFromSubplotSpec(7, 1, subplot_spec=gs_main[1], hspace=0.5)
+
+axs_plots = [fig.add_subplot(gs_plots[i]) for i in range(7)]
+
+# Nose position
+l_nose_pos, = axs_plots[0].plot([], [], label='Nose Y (filtered)', color='m')
+axs_plots[0].axhline(fall_threshold_nose, color='r', linestyle='--', label='Nose Fall Threshold')
+axs_plots[0].invert_yaxis()
+axs_plots[0].set_ylabel('Pixels')
+axs_plots[0].legend()
+axs_plots[0].set_title('Nose Y Position')
+
+# Left hip position
+l_lhip_pos, = axs_plots[1].plot([], [], label='Left Hip Y (filtered)', color='b')
+axs_plots[1].axhline(fall_threshold_lhip, color='r', linestyle='--', label='Left Hip Fall Threshold')
+axs_plots[1].invert_yaxis()
+axs_plots[1].set_ylabel('Pixels')
+axs_plots[1].legend()
+axs_plots[1].set_title('Left Hip Y Position')
+
+# Nose velocity
+l_nose_vel, = axs_plots[2].plot([], [], label='Nose Velocity', color='c')
+axs_plots[2].axhline(velocity_threshold, color='r', linestyle='--', label='Velocity Threshold')
+axs_plots[2].set_ylabel('Pixels/frame')
+axs_plots[2].legend()
+axs_plots[2].set_title('Nose Velocity')
+
+# Left hip velocity
+l_lhip_vel, = axs_plots[3].plot([], [], label='Left Hip Velocity', color='g')
+axs_plots[3].axhline(velocity_threshold, color='r', linestyle='--', label='Velocity Threshold')
+axs_plots[3].set_ylabel('Pixels/frame')
+axs_plots[3].legend()
+axs_plots[3].set_title('Left Hip Velocity')
+
+# Position and velocity conditions
+l_pos_cond_nose, = axs_plots[4].step([], [], label='Nose Pos > Threshold', color='m')
+l_pos_cond_lhip, = axs_plots[4].step([], [], label='Left Hip Pos > Threshold', color='b')
+l_vel_cond_nose, = axs_plots[4].step([], [], label='Nose Vel > Threshold', color='c')
+l_vel_cond_lhip, = axs_plots[4].step([], [], label='Left Hip Vel > Threshold', color='g')
+axs_plots[4].set_ylabel('Bool (0/1)')
+axs_plots[4].legend(loc='upper right')
+axs_plots[4].set_title('Position and Velocity Conditions')
+
+# Fall detection condition
+l_fall_cond, = axs_plots[5].step([], [], label='Fall Condition', color='r')
+axs_plots[5].set_ylabel('Bool (0/1)')
+axs_plots[5].legend()
+axs_plots[5].set_title('Fall Detection Condition')
+axs_plots[5].set_xlabel('Frame')
+
+# Empty last plot or extra info
+axs_plots[6].axis('off')
+
+# Fix axis limits on plots
+for ax in axs_plots[:6]:
+    ax.set_autoscale_on(False)
+    ax.set_xlim(0, buf_size)
+axs_plots[0].set_ylim(height, 0)
+axs_plots[1].set_ylim(height, 0)
+axs_plots[2].set_ylim(-1, max(20, velocity_threshold + 5))
+axs_plots[3].set_ylim(-1, max(20, velocity_threshold + 5))
+axs_plots[4].set_ylim(-0.1, 1.1)
+axs_plots[5].set_ylim(-0.1, 1.1)
 
 frame_idx = 0
+
+def ema_filter(prev, new, alpha):
+    if prev is None:
+        return new
+    return alpha * new + (1 - alpha) * prev
+
+def compute_velocity(data_deque):
+    if len(data_deque) < 2:
+        return 0.0
+    return data_deque[-1] - data_deque[-2]
 
 try:
     while True:
@@ -85,84 +173,98 @@ try:
         results = pose.process(image)
         output = frame.copy()
 
-        hip_y = None
+        nose_y = None
+        left_hip_y = None
 
         if results.pose_landmarks:
-            for landmark in results.pose_landmarks.landmark:
+            lm = results.pose_landmarks.landmark
+            for landmark in lm:
                 cx, cy = int(landmark.x * width), int(landmark.y * height)
-                cv2.circle(output, (cx, cy), 5, (0, 255, 0), -1)
+                cv2.circle(output, (cx, cy), 5, (0,255,0), -1)
 
-            hip_landmark = results.pose_landmarks.landmark[mp_pose.PoseLandmark.NOSE]
-            #hip_landmark = results.pose_landmarks.landmark[mp_pose.PoseLandmark.LEFT_HIP]
-            hip_y = hip_landmark.y * height
+            nose_y = lm[mp_pose.PoseLandmark.NOSE].y * height
+            left_hip_y = lm[mp_pose.PoseLandmark.LEFT_HIP].y * height
 
-        # Update data buffers and detect fall
-        if hip_y is not None:
-            hipYs.append(hip_y)
-            times.append(frame_idx)
+        nose_raw.append(nose_y if nose_y is not None else (nose_raw[-1] if nose_raw else height))
+        left_hip_raw.append(left_hip_y if left_hip_y is not None else (left_hip_raw[-1] if left_hip_raw else height))
 
-            if len(hipYs) > 1:
-                velocity = hipYs[-1] - hipYs[-2]
-                velocities.append(velocity)
+        # Filter positions
+        nose_filt_val = ema_filter(nose_filt[-1] if nose_filt else None, nose_raw[-1], alpha)
+        left_hip_filt_val = ema_filter(left_hip_filt[-1] if left_hip_filt else None, left_hip_raw[-1], alpha)
 
-                acceleration = 0
-                if len(velocities) > 1:
-                    acceleration = velocities[-1] - velocities[-2]
+        nose_filt.append(nose_filt_val)
+        left_hip_filt.append(left_hip_filt_val)
 
-                # Fall detection logic (more sensitive)
-                if velocity > fall_velocity_threshold and acceleration > fall_acceleration_threshold:
-                    fall_counter += 1
-                else:
-                    fall_counter = max(0, fall_counter - 1)
-            else:
-                velocities.append(0)
-                fall_counter = 0
-        else:
-            # No detection, keep previous values or zero
-            hipYs.append(hipYs[-1] if hipYs else 0)
-            velocities.append(0)
-            times.append(frame_idx)
-            fall_counter = max(0, fall_counter - 1)
+        # Compute velocities
+        nose_vel = compute_velocity(nose_filt)
+        left_hip_vel = compute_velocity(left_hip_filt)
 
+        nose_vel_filt.append(nose_vel)
+        left_hip_vel_filt.append(left_hip_vel)
+
+        times.append(frame_idx)
         frame_idx += 1
 
-        # Visual and audio alert if fall detected
-        if fall_counter >= fall_frame_limit:
-            # Dramatic red flashing overlay
-            alpha = 0.6 + 0.4 * np.sin(frame_idx * 0.3)  # oscillate transparency
+        # Valid detection check
+        valid_detection = all(min_valid_y < y < max_valid_y for y in [nose_filt_val, left_hip_filt_val])
+
+        # Conditions
+        pos_nose_cond = int(nose_filt_val > fall_threshold_nose)
+        pos_lhip_cond = int(left_hip_filt_val > fall_threshold_lhip)
+        vel_nose_cond = int(nose_vel > velocity_threshold)
+        vel_lhip_cond = int(left_hip_vel > velocity_threshold)
+
+        pos_cond_nose.append(pos_nose_cond)
+        pos_cond_lhip.append(pos_lhip_cond)
+        vel_cond_nose.append(vel_nose_cond)
+        vel_cond_lhip.append(vel_lhip_cond)
+
+        # Fall detection logic: fall if position and velocity condition for either nose or left hip
+        fall_detected_cond = valid_detection and (
+            (pos_nose_cond and vel_nose_cond) or
+            (pos_lhip_cond and vel_lhip_cond)
+        )
+
+        if fall_detected_cond:
+            fall_counter += 1
+        else:
+            fall_counter = max(0, fall_counter - 1)
+
+        fall_cond_flag = int(fall_counter >= fall_frame_limit)
+        fall_cond.append(fall_cond_flag)
+
+        # Visual + sound alert
+        if fall_cond_flag:
+            alpha_overlay = 0.6 + 0.4 * np.sin(frame_idx * 0.3)
             overlay = output.copy()
             cv2.rectangle(overlay, (0, 0), (width, height), (0, 0, 255), -1)
-            cv2.addWeighted(overlay, alpha, output, 1 - alpha, 0, output)
-
-            cv2.putText(output, "FALL DETECTED!", (50, int(height/2)), cv2.FONT_HERSHEY_SIMPLEX,
+            cv2.addWeighted(overlay, alpha_overlay, output, 1 - alpha_overlay, 0, output)
+            cv2.putText(output, "FALL DETECTED!", (50, int(height / 2)), cv2.FONT_HERSHEY_SIMPLEX,
                         3, (255, 255, 255), 8, cv2.LINE_AA)
-
-            # Play sound once per fall event
             if not fall_alert_triggered:
                 play_sound()
                 fall_alert_triggered = True
         else:
             fall_alert_triggered = False
 
-        # Update plots
         rgb_frame = cv2.cvtColor(output, cv2.COLOR_BGR2RGB)
         img_plot.set_data(rgb_frame)
 
-        l1.set_data(times, hipYs)
-        l2.set_data(times, velocities)
-
-        ax1.set_xlim(max(0, frame_idx - buf_size), frame_idx + 1)
-        ax2.set_xlim(ax1.get_xlim())
-
-        if hipYs:
-            ax1.set_ylim(min(hipYs), max(hipYs))
-        if velocities:
-            ax2.set_ylim(min(velocities), max(velocities))
+        # Update plots with fixed x-axis range using range(len(...))
+        l_nose_pos.set_data(range(len(nose_filt)), nose_filt)
+        l_lhip_pos.set_data(range(len(left_hip_filt)), left_hip_filt)
+        l_nose_vel.set_data(range(len(nose_vel_filt)), nose_vel_filt)
+        l_lhip_vel.set_data(range(len(left_hip_vel_filt)), left_hip_vel_filt)
+        l_pos_cond_nose.set_data(range(len(pos_cond_nose)), pos_cond_nose)
+        l_pos_cond_lhip.set_data(range(len(pos_cond_lhip)), pos_cond_lhip)
+        l_vel_cond_nose.set_data(range(len(vel_cond_nose)), vel_cond_nose)
+        l_vel_cond_lhip.set_data(range(len(vel_cond_lhip)), vel_cond_lhip)
+        l_fall_cond.set_data(range(len(fall_cond)), fall_cond)
 
         plt.pause(0.001)
 
 except KeyboardInterrupt:
-    print("Interrupted.")
+    print("Interrupted by user")
 
 finally:
     cap.release()
