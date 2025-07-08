@@ -6,6 +6,12 @@ from collections import deque
 import platform
 import threading
 import matplotlib.gridspec as gridspec
+import argparse
+from src import args_validation
+
+args = args_validation.args_validation(argparse.ArgumentParser())
+input_video_file = args.input_video_file
+out_video_path = args.output_video_file
 
 # Sound alert setup
 try:
@@ -24,7 +30,7 @@ except ImportError:
 mp_pose = mp.solutions.pose
 pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5)
 
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(input_video_file)
 if not cap.isOpened():
     print("Error: Could not open webcam.")
     exit()
@@ -221,7 +227,7 @@ try:
 
         # Fall detection logic: fall if position and velocity condition for either nose or left hip
         fall_detected_cond = valid_detection and (
-            (pos_nose_cond and vel_nose_cond) or
+            (pos_nose_cond and vel_nose_cond) and
             (pos_lhip_cond and vel_lhip_cond)
         )
 
