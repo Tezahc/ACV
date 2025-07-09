@@ -138,7 +138,6 @@ def compute_velocity(deq):
     return deq[-1] - deq[-2] if len(deq) >= 2 else 0
 
 # Main loop
-# check si un output a été renseigné
 record_enabled = bool(out_video_path)
 video_recorder = record.VideoRecorder(
     output_path = out_video_path,
@@ -148,6 +147,8 @@ video_recorder = record.VideoRecorder(
 )
 
 try:
+    window_initialized = False
+
     while True:
         ret, frame = video_cap.read()
         if not ret:
@@ -210,7 +211,6 @@ try:
         else:
             fall_alert_triggered = False
 
-        # Ajout de la frame à la video (record actif)
         video_recorder.write(output)
 
         # === Display ===
@@ -227,7 +227,12 @@ try:
             l_fall_cond.set_data(range(len(fall_cond)), fall_cond)
             plt.pause(0.001)
         else:
-            cv2.imshow("Fall Detection", output)
+            if not window_initialized:
+                cv2.namedWindow("FallDetector", cv2.WINDOW_NORMAL)
+                cv2.resizeWindow("FallDetector", video_width, video_height)
+                window_initialized = True
+
+            cv2.imshow("FallDetector", output)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 
