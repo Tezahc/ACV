@@ -6,11 +6,15 @@ Cette application permet de détecter et d'alerter via un signal sonore en temps
 
 ## Installation
 Dans un terminal :
+```
 git clone https://github.com/Tezahc/ACV.git
-conda create -n acv python=3.10
-conda activate acv
-pip install -r requirements.txt
 
+conda create -n acv python=3.10
+
+conda activate acv
+
+pip install -r requirements.txt
+```
 ## Lancement
 Depuis un terminal :
 python script.py [-i <input_video_file>] [-o <output_video_file>] [-p <show_landmarks_plots>]
