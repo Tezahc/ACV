@@ -27,7 +27,7 @@ try:
     else:
         from playsound import playsound
         def play_sound():
-            threading.Thread(target=playsound, args=('alert.mp3',), daemon=True).start()
+            threading.Thread(target=playsound, args=('alerte_iphone_short.mp3',), daemon=True).start()
 except ImportError:
     def play_sound():
         print("Sound module not available")
