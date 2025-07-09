@@ -10,9 +10,13 @@ import argparse
 from src import args_validation
 import record
 
-args = args_validation.args_validation(argparse.ArgumentParser())
+# Argument parsing
+parser = argparse.ArgumentParser()
+args = args_validation.args_validation(parser)
+
 input_video_file = args.input_video_file
 out_video_path = args.output_video_file
+show_plots = args.show_plots
 
 # Sound alert setup
 try:
@@ -28,6 +32,7 @@ except ImportError:
     def play_sound():
         print("Sound module not available")
 
+# Pose detection setup
 mp_pose = mp.solutions.pose
 pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5)
 
@@ -42,32 +47,25 @@ video_height = int(video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
 ret, frame = video_cap.read()
 if not ret:
-    print("Error: Could not read frame from webcam.")
+    print("Error: Could not read initial frame.")
     exit()
 
-buf_size = 150
+# Buffers
+buf_size = 50
 times = deque(maxlen=buf_size)
-
-# Raw Y positions
 nose_raw = deque(maxlen=buf_size)
 left_hip_raw = deque(maxlen=buf_size)
-
-# Filtered Y positions
 nose_filt = deque(maxlen=buf_size)
 left_hip_filt = deque(maxlen=buf_size)
-
-# Filtered velocities
 nose_vel_filt = deque(maxlen=buf_size)
 left_hip_vel_filt = deque(maxlen=buf_size)
-
-# Conditions (0 or 1)
 pos_cond_nose = deque(maxlen=buf_size)
 pos_cond_lhip = deque(maxlen=buf_size)
 vel_cond_nose = deque(maxlen=buf_size)
 vel_cond_lhip = deque(maxlen=buf_size)
 fall_cond = deque(maxlen=buf_size)
 
-# EMA smoothing factor
+# Constants
 alpha = 0.3
 
 # Thresholds
@@ -81,97 +79,65 @@ fall_alert_triggered = False
 min_valid_y = video_height * 0.2
 max_valid_y = video_height * 0.95
 
-plt.ion()
+# Plot setup (only if enabled)
+if show_plots:
+    plt.ion()
+    fig = plt.figure(figsize=(14, 8))
+    gs_main = gridspec.GridSpec(1, 2, width_ratios=[4, 3], wspace=0.3)
+    ax_video = fig.add_subplot(gs_main[0])
+    img_plot = ax_video.imshow(np.zeros((video_height, video_width, 3), dtype=np.uint8))
+    ax_video.axis('off')
+    ax_video.set_title("Pose Landmarks")
 
-# Use gridspec for better layout
-fig = plt.figure(figsize=(14, 8))
+    gs_plots = gridspec.GridSpecFromSubplotSpec(7, 1, subplot_spec=gs_main[1], hspace=0.5)
+    axs_plots = [fig.add_subplot(gs_plots[i]) for i in range(7)]
 
-# Main gridspec: 1 row, 2 columns (video + plots)
-gs_main = gridspec.GridSpec(1, 2, width_ratios=[4, 3], wspace=0.3)
+    l_nose_pos, = axs_plots[0].plot([], [], label='Nose Y (filtered)', color='m')
+    axs_plots[0].axhline(fall_threshold_nose, color='r', linestyle='--')
+    axs_plots[0].invert_yaxis()
+    axs_plots[0].set_title("Nose Y Position")
 
-# Video feed axis (left)
-ax_video = fig.add_subplot(gs_main[0])
-img_plot = ax_video.imshow(np.zeros((video_height, video_width, 3), dtype=np.uint8))
-ax_video.axis('off')
-ax_video.set_title("Pose Landmarks")
+    l_lhip_pos, = axs_plots[1].plot([], [], label='Left Hip Y (filtered)', color='b')
+    axs_plots[1].axhline(fall_threshold_lhip, color='r', linestyle='--')
+    axs_plots[1].invert_yaxis()
+    axs_plots[1].set_title("Left Hip Y Position")
 
-# Nested gridspec for 7 stacked plots (right)
-gs_plots = gridspec.GridSpecFromSubplotSpec(7, 1, subplot_spec=gs_main[1], hspace=0.5)
+    l_nose_vel, = axs_plots[2].plot([], [], label='Nose Velocity', color='c')
+    axs_plots[2].axhline(velocity_threshold, color='r', linestyle='--')
+    axs_plots[2].set_title("Nose Velocity")
 
-axs_plots = [fig.add_subplot(gs_plots[i]) for i in range(7)]
+    l_lhip_vel, = axs_plots[3].plot([], [], label='Left Hip Velocity', color='g')
+    axs_plots[3].axhline(velocity_threshold, color='r', linestyle='--')
+    axs_plots[3].set_title("Left Hip Velocity")
 
-# Nose position
-l_nose_pos, = axs_plots[0].plot([], [], label='Nose Y (filtered)', color='m')
-axs_plots[0].axhline(fall_threshold_nose, color='r', linestyle='--', label='Nose Fall Threshold')
-axs_plots[0].invert_yaxis()
-axs_plots[0].set_ylabel('Pixels')
-axs_plots[0].legend()
-axs_plots[0].set_title('Nose Y Position')
+    l_pos_cond_nose, = axs_plots[4].step([], [], label='Nose Pos > Threshold', color='m')
+    l_pos_cond_lhip, = axs_plots[4].step([], [], label='LHip Pos > Threshold', color='b')
+    l_vel_cond_nose, = axs_plots[4].step([], [], label='Nose Vel > Threshold', color='c')
+    l_vel_cond_lhip, = axs_plots[4].step([], [], label='LHip Vel > Threshold', color='g')
+    axs_plots[4].set_title("Position/Velocity Conditions")
 
-# Left hip position
-l_lhip_pos, = axs_plots[1].plot([], [], label='Left Hip Y (filtered)', color='b')
-axs_plots[1].axhline(fall_threshold_lhip, color='r', linestyle='--', label='Left Hip Fall Threshold')
-axs_plots[1].invert_yaxis()
-axs_plots[1].set_ylabel('Pixels')
-axs_plots[1].legend()
-axs_plots[1].set_title('Left Hip Y Position')
+    l_fall_cond, = axs_plots[5].step([], [], label='Fall Condition', color='r')
+    axs_plots[5].set_title("Fall Detection")
+    axs_plots[6].axis('off')
 
-# Nose velocity
-l_nose_vel, = axs_plots[2].plot([], [], label='Nose Velocity', color='c')
-axs_plots[2].axhline(velocity_threshold, color='r', linestyle='--', label='Velocity Threshold')
-axs_plots[2].set_ylabel('Pixels/frame')
-axs_plots[2].legend()
-axs_plots[2].set_title('Nose Velocity')
-
-# Left hip velocity
-l_lhip_vel, = axs_plots[3].plot([], [], label='Left Hip Velocity', color='g')
-axs_plots[3].axhline(velocity_threshold, color='r', linestyle='--', label='Velocity Threshold')
-axs_plots[3].set_ylabel('Pixels/frame')
-axs_plots[3].legend()
-axs_plots[3].set_title('Left Hip Velocity')
-
-# Position and velocity conditions
-l_pos_cond_nose, = axs_plots[4].step([], [], label='Nose Pos > Threshold', color='m')
-l_pos_cond_lhip, = axs_plots[4].step([], [], label='Left Hip Pos > Threshold', color='b')
-l_vel_cond_nose, = axs_plots[4].step([], [], label='Nose Vel > Threshold', color='c')
-l_vel_cond_lhip, = axs_plots[4].step([], [], label='Left Hip Vel > Threshold', color='g')
-axs_plots[4].set_ylabel('Bool (0/1)')
-axs_plots[4].legend(loc='upper right')
-axs_plots[4].set_title('Position and Velocity Conditions')
-
-# Fall detection condition
-l_fall_cond, = axs_plots[5].step([], [], label='Fall Condition', color='r')
-axs_plots[5].set_ylabel('Bool (0/1)')
-axs_plots[5].legend()
-axs_plots[5].set_title('Fall Detection Condition')
-axs_plots[5].set_xlabel('Frame')
-
-# Empty last plot or extra info
-axs_plots[6].axis('off')
-
-# Fix axis limits on plots
-for ax in axs_plots[:6]:
-    ax.set_autoscale_on(False)
-    ax.set_xlim(0, buf_size)
-axs_plots[0].set_ylim(video_height, 0)
-axs_plots[1].set_ylim(video_height, 0)
-axs_plots[2].set_ylim(-1, max(20, velocity_threshold + 5))
-axs_plots[3].set_ylim(-1, max(20, velocity_threshold + 5))
-axs_plots[4].set_ylim(-0.1, 1.1)
-axs_plots[5].set_ylim(-0.1, 1.1)
+    for ax in axs_plots[:6]:
+        ax.set_xlim(0, buf_size)
+    axs_plots[0].set_ylim(video_height, 0)
+    axs_plots[1].set_ylim(video_height, 0)
+    axs_plots[2].set_ylim(-1, 20)
+    axs_plots[3].set_ylim(-1, 20)
+    axs_plots[4].set_ylim(-0.1, 1.1)
+    axs_plots[5].set_ylim(-0.1, 1.1)
 
 frame_idx = 0
 
 def ema_filter(prev, new, alpha):
-    if prev is None:
-        return new
-    return alpha * new + (1 - alpha) * prev
+    return new if prev is None else alpha * new + (1 - alpha) * prev
 
-def compute_velocity(data_deque):
-    if len(data_deque) < 2:
-        return 0.0
-    return data_deque[-1] - data_deque[-2]
+def compute_velocity(deq):
+    return deq[-1] - deq[-2] if len(deq) >= 2 else 0
 
+# Main loop
 # check si un output a été renseigné
 record_enabled = bool(out_video_path)
 video_recorder = record.VideoRecorder(
@@ -191,103 +157,90 @@ try:
         results = pose.process(image)
         output = frame.copy()
 
-        nose_y = None
-        left_hip_y = None
-
+        nose_y, left_hip_y = None, None
         if results.pose_landmarks:
             lm = results.pose_landmarks.landmark
             for landmark in lm:
                 cx, cy = int(landmark.x * video_width), int(landmark.y * video_height)
-                cv2.circle(output, (cx, cy), 5, (0,255,0), -1)
+                cv2.circle(output, (cx, cy), 5, (0, 255, 0), -1)
 
             nose_y = lm[mp_pose.PoseLandmark.NOSE].y * video_height
             left_hip_y = lm[mp_pose.PoseLandmark.LEFT_HIP].y * video_height
 
-        nose_raw.append(nose_y if nose_y is not None else (nose_raw[-1] if nose_raw else video_height))
-        left_hip_raw.append(left_hip_y if left_hip_y is not None else (left_hip_raw[-1] if left_hip_raw else video_height))
+        # Fill raw and filtered data
+        nose_raw.append(nose_y if nose_y else nose_raw[-1] if nose_raw else height)
+        left_hip_raw.append(left_hip_y if left_hip_y else left_hip_raw[-1] if left_hip_raw else height)
 
-        # Filter positions
         nose_filt_val = ema_filter(nose_filt[-1] if nose_filt else None, nose_raw[-1], alpha)
         left_hip_filt_val = ema_filter(left_hip_filt[-1] if left_hip_filt else None, left_hip_raw[-1], alpha)
 
         nose_filt.append(nose_filt_val)
         left_hip_filt.append(left_hip_filt_val)
 
-        # Compute velocities
         nose_vel = compute_velocity(nose_filt)
         left_hip_vel = compute_velocity(left_hip_filt)
-
         nose_vel_filt.append(nose_vel)
         left_hip_vel_filt.append(left_hip_vel)
 
-        times.append(frame_idx)
-        frame_idx += 1
+        # Detection conditions
+        valid = min_valid_y < nose_filt_val < max_valid_y and min_valid_y < left_hip_filt_val < max_valid_y
+        pos_n = int(nose_filt_val > fall_threshold_nose)
+        pos_l = int(left_hip_filt_val > fall_threshold_lhip)
+        vel_n = int(nose_vel > velocity_threshold)
+        vel_l = int(left_hip_vel > velocity_threshold)
 
-        # Valid detection check
-        valid_detection = all(min_valid_y < y < max_valid_y for y in [nose_filt_val, left_hip_filt_val])
+        pos_cond_nose.append(pos_n)
+        pos_cond_lhip.append(pos_l)
+        vel_cond_nose.append(vel_n)
+        vel_cond_lhip.append(vel_l)
 
-        # Conditions
-        pos_nose_cond = int(nose_filt_val > fall_threshold_nose)
-        pos_lhip_cond = int(left_hip_filt_val > fall_threshold_lhip)
-        vel_nose_cond = int(nose_vel > velocity_threshold)
-        vel_lhip_cond = int(left_hip_vel > velocity_threshold)
+        fall_cond_now = valid and ((pos_n and vel_n) or (pos_l and vel_l))
+        fall_counter = fall_counter + 1 if fall_cond_now else max(0, fall_counter - 1)
+        fall_flag = int(fall_counter >= fall_frame_limit)
+        fall_cond.append(fall_flag)
 
-        pos_cond_nose.append(pos_nose_cond)
-        pos_cond_lhip.append(pos_lhip_cond)
-        vel_cond_nose.append(vel_nose_cond)
-        vel_cond_lhip.append(vel_lhip_cond)
-
-        # Fall detection logic: fall if position and velocity condition for either nose or left hip
-        fall_detected_cond = valid_detection and (
-            (pos_nose_cond and vel_nose_cond) or
-            (pos_lhip_cond and vel_lhip_cond)
-        )
-
-        if fall_detected_cond:
-            fall_counter += 1
-        else:
-            fall_counter = max(0, fall_counter - 1)
-
-        fall_cond_flag = int(fall_counter >= fall_frame_limit)
-        fall_cond.append(fall_cond_flag)
-
-        # Visual + sound alert
-        if fall_cond_flag:
-            alpha_overlay = 0.6 + 0.4 * np.sin(frame_idx * 0.3)
+        if fall_flag:
             overlay = output.copy()
             cv2.rectangle(overlay, (0, 0), (video_width, video_height), (0, 0, 255), -1)
-            cv2.addWeighted(overlay, alpha_overlay, output, 1 - alpha_overlay, 0, output)
-            cv2.putText(output, "FALL DETECTED!", (50, int(video_height / 2)), cv2.FONT_HERSHEY_SIMPLEX,
-                        3, (255, 255, 255), 8, cv2.LINE_AA)
+            cv2.addWeighted(overlay, 0.4, output, 0.6, 0, output)
+            cv2.putText(output, "FALL DETECTED!", (50, video_height // 2), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 4)
             if not fall_alert_triggered:
                 play_sound()
                 fall_alert_triggered = True
         else:
             fall_alert_triggered = False
 
-        rgb_frame = cv2.cvtColor(output, cv2.COLOR_BGR2RGB)
-        img_plot.set_data(rgb_frame)
-        video_recorder.write(output) # output car en BGR pour cv2
+        # Ajout de la frame à la video (record actif)
+        video_recorder.write(output)
 
-        # Update plots with fixed x-axis range using range(len(...))
-        l_nose_pos.set_data(range(len(nose_filt)), nose_filt)
-        l_lhip_pos.set_data(range(len(left_hip_filt)), left_hip_filt)
-        l_nose_vel.set_data(range(len(nose_vel_filt)), nose_vel_filt)
-        l_lhip_vel.set_data(range(len(left_hip_vel_filt)), left_hip_vel_filt)
-        l_pos_cond_nose.set_data(range(len(pos_cond_nose)), pos_cond_nose)
-        l_pos_cond_lhip.set_data(range(len(pos_cond_lhip)), pos_cond_lhip)
-        l_vel_cond_nose.set_data(range(len(vel_cond_nose)), vel_cond_nose)
-        l_vel_cond_lhip.set_data(range(len(vel_cond_lhip)), vel_cond_lhip)
-        l_fall_cond.set_data(range(len(fall_cond)), fall_cond)
+        # === Display ===
+        if show_plots:
+            img_plot.set_data(cv2.cvtColor(output, cv2.COLOR_BGR2RGB))
+            l_nose_pos.set_data(range(len(nose_filt)), nose_filt)
+            l_lhip_pos.set_data(range(len(left_hip_filt)), left_hip_filt)
+            l_nose_vel.set_data(range(len(nose_vel_filt)), nose_vel_filt)
+            l_lhip_vel.set_data(range(len(left_hip_vel_filt)), left_hip_vel_filt)
+            l_pos_cond_nose.set_data(range(len(pos_cond_nose)), pos_cond_nose)
+            l_pos_cond_lhip.set_data(range(len(pos_cond_lhip)), pos_cond_lhip)
+            l_vel_cond_nose.set_data(range(len(vel_cond_nose)), vel_cond_nose)
+            l_vel_cond_lhip.set_data(range(len(vel_cond_lhip)), vel_cond_lhip)
+            l_fall_cond.set_data(range(len(fall_cond)), fall_cond)
+            plt.pause(0.001)
+        else:
+            cv2.imshow("Fall Detection", output)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
 
-        plt.pause(0.001)
+        frame_idx += 1
 
 except KeyboardInterrupt:
-    print("Interrupted by user")
+    print("Interrupted")
 
 finally:
     video_cap.release()
-    plt.ioff()
-    plt.show()
-    video_recorder.release()
+    if show_plots:
+        plt.ioff()
+        plt.show()
+    else:
+        video_recorder.release()
     cv2.destroyAllWindows()
