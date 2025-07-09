@@ -8,6 +8,7 @@ import threading
 import matplotlib.gridspec as gridspec
 import argparse
 from src import args_validation
+import record
 
 args = args_validation.args_validation(argparse.ArgumentParser())
 input_video_file = args.input_video_file
@@ -30,17 +31,19 @@ except ImportError:
 mp_pose = mp.solutions.pose
 pose = mp_pose.Pose(static_image_mode=False, min_detection_confidence=0.5)
 
-cap = cv2.VideoCapture(input_video_file)
-if not cap.isOpened():
+video_cap = cv2.VideoCapture(input_video_file)
+if not video_cap.isOpened():
     print("Error: Could not open webcam.")
     exit()
 
-ret, frame = cap.read()
+video_fps = video_cap.get(cv2.CAP_PROP_FPS)
+video_width = int(video_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+video_height = int(video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+ret, frame = video_cap.read()
 if not ret:
     print("Error: Could not read frame from webcam.")
     exit()
-
-height, width, _ = frame.shape
 
 buf_size = 150
 times = deque(maxlen=buf_size)
@@ -68,15 +71,15 @@ fall_cond = deque(maxlen=buf_size)
 alpha = 0.3
 
 # Thresholds
-fall_threshold_lhip = height * 0.75
-fall_threshold_nose = height * 0.6
+fall_threshold_lhip = video_height * 0.75
+fall_threshold_nose = video_height * 0.6
 velocity_threshold = 7.0
 fall_frame_limit = 3
 fall_counter = 0
 fall_alert_triggered = False
 
-min_valid_y = height * 0.2
-max_valid_y = height * 0.95
+min_valid_y = video_height * 0.2
+max_valid_y = video_height * 0.95
 
 plt.ion()
 
@@ -88,7 +91,7 @@ gs_main = gridspec.GridSpec(1, 2, width_ratios=[4, 3], wspace=0.3)
 
 # Video feed axis (left)
 ax_video = fig.add_subplot(gs_main[0])
-img_plot = ax_video.imshow(np.zeros((height, width, 3), dtype=np.uint8))
+img_plot = ax_video.imshow(np.zeros((video_height, video_width, 3), dtype=np.uint8))
 ax_video.axis('off')
 ax_video.set_title("Pose Landmarks")
 
@@ -150,8 +153,8 @@ axs_plots[6].axis('off')
 for ax in axs_plots[:6]:
     ax.set_autoscale_on(False)
     ax.set_xlim(0, buf_size)
-axs_plots[0].set_ylim(height, 0)
-axs_plots[1].set_ylim(height, 0)
+axs_plots[0].set_ylim(video_height, 0)
+axs_plots[1].set_ylim(video_height, 0)
 axs_plots[2].set_ylim(-1, max(20, velocity_threshold + 5))
 axs_plots[3].set_ylim(-1, max(20, velocity_threshold + 5))
 axs_plots[4].set_ylim(-0.1, 1.1)
@@ -169,9 +172,18 @@ def compute_velocity(data_deque):
         return 0.0
     return data_deque[-1] - data_deque[-2]
 
+# check si un output a été renseigné
+record_enabled = bool(out_video_path)
+video_recorder = record.VideoRecorder(
+    output_path = out_video_path,
+    fps = video_fps,
+    frame_size = (int(video_width), int(video_height)),
+    enabled = record_enabled
+)
+
 try:
     while True:
-        ret, frame = cap.read()
+        ret, frame = video_cap.read()
         if not ret:
             break
 
@@ -185,14 +197,14 @@ try:
         if results.pose_landmarks:
             lm = results.pose_landmarks.landmark
             for landmark in lm:
-                cx, cy = int(landmark.x * width), int(landmark.y * height)
+                cx, cy = int(landmark.x * video_width), int(landmark.y * video_height)
                 cv2.circle(output, (cx, cy), 5, (0,255,0), -1)
 
-            nose_y = lm[mp_pose.PoseLandmark.NOSE].y * height
-            left_hip_y = lm[mp_pose.PoseLandmark.LEFT_HIP].y * height
+            nose_y = lm[mp_pose.PoseLandmark.NOSE].y * video_height
+            left_hip_y = lm[mp_pose.PoseLandmark.LEFT_HIP].y * video_height
 
-        nose_raw.append(nose_y if nose_y is not None else (nose_raw[-1] if nose_raw else height))
-        left_hip_raw.append(left_hip_y if left_hip_y is not None else (left_hip_raw[-1] if left_hip_raw else height))
+        nose_raw.append(nose_y if nose_y is not None else (nose_raw[-1] if nose_raw else video_height))
+        left_hip_raw.append(left_hip_y if left_hip_y is not None else (left_hip_raw[-1] if left_hip_raw else video_height))
 
         # Filter positions
         nose_filt_val = ema_filter(nose_filt[-1] if nose_filt else None, nose_raw[-1], alpha)
@@ -227,7 +239,7 @@ try:
 
         # Fall detection logic: fall if position and velocity condition for either nose or left hip
         fall_detected_cond = valid_detection and (
-            (pos_nose_cond and vel_nose_cond) and
+            (pos_nose_cond and vel_nose_cond) or
             (pos_lhip_cond and vel_lhip_cond)
         )
 
@@ -243,9 +255,9 @@ try:
         if fall_cond_flag:
             alpha_overlay = 0.6 + 0.4 * np.sin(frame_idx * 0.3)
             overlay = output.copy()
-            cv2.rectangle(overlay, (0, 0), (width, height), (0, 0, 255), -1)
+            cv2.rectangle(overlay, (0, 0), (video_width, video_height), (0, 0, 255), -1)
             cv2.addWeighted(overlay, alpha_overlay, output, 1 - alpha_overlay, 0, output)
-            cv2.putText(output, "FALL DETECTED!", (50, int(height / 2)), cv2.FONT_HERSHEY_SIMPLEX,
+            cv2.putText(output, "FALL DETECTED!", (50, int(video_height / 2)), cv2.FONT_HERSHEY_SIMPLEX,
                         3, (255, 255, 255), 8, cv2.LINE_AA)
             if not fall_alert_triggered:
                 play_sound()
@@ -255,6 +267,7 @@ try:
 
         rgb_frame = cv2.cvtColor(output, cv2.COLOR_BGR2RGB)
         img_plot.set_data(rgb_frame)
+        video_recorder.write(output) # output car en BGR pour cv2
 
         # Update plots with fixed x-axis range using range(len(...))
         l_nose_pos.set_data(range(len(nose_filt)), nose_filt)
@@ -273,7 +286,8 @@ except KeyboardInterrupt:
     print("Interrupted by user")
 
 finally:
-    cap.release()
+    video_cap.release()
     plt.ioff()
     plt.show()
+    video_recorder.release()
     cv2.destroyAllWindows()
