@@ -168,8 +168,8 @@ try:
             left_hip_y = lm[mp_pose.PoseLandmark.LEFT_HIP].y * video_height
 
         # Fill raw and filtered data
-        nose_raw.append(nose_y if nose_y else nose_raw[-1] if nose_raw else height)
-        left_hip_raw.append(left_hip_y if left_hip_y else left_hip_raw[-1] if left_hip_raw else height)
+        nose_raw.append(nose_y if nose_y else nose_raw[-1] if nose_raw else video_height)
+        left_hip_raw.append(left_hip_y if left_hip_y else left_hip_raw[-1] if left_hip_raw else video_height)
 
         nose_filt_val = ema_filter(nose_filt[-1] if nose_filt else None, nose_raw[-1], alpha)
         left_hip_filt_val = ema_filter(left_hip_filt[-1] if left_hip_filt else None, left_hip_raw[-1], alpha)
