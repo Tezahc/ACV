@@ -14,6 +14,6 @@ python script.py [-i <input_video_file>] [-o <output_video_file>]
 
 Options :
 - input_video_file : nom du fichier vidéo à analyser au format mp4 (optionnel). Si non renseigné, l'application utilise par défaut le flux vidéo de la webcam.
-- output_video_file : nom du fichier vidéo analysé par l'application montrant le nombre et l'instant des chutes (optionnel).
+- output_video_file : nom du fichier vidéo analysé par l'application (optionnel).
 
 
