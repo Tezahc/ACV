@@ -13,7 +13,7 @@ pip install -r requirements.txt
 
 ## Lancement
 Depuis un terminal :
-python script.py [-i <input_video_file>] [-o <output_video_file>] [-h <help>] [-p <show_landmarks_plots>]
+python script.py [-i <input_video_file>] [-o <output_video_file>] [-p <show_landmarks_plots>]
 
 Options :
 - input_video_file : nom du fichier vidéo à analyser au format mp4 (optionnel). Si non renseigné, l'application utilise par défaut le flux vidéo de la webcam.
